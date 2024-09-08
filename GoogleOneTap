@@ -1,0 +1,165 @@
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const session = require("express-session");
+const MongoStore = require("connect-mongo");
+const cors = require("cors");
+const { OAuth2Client } = require("google-auth-library");
+
+const app = express();
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// MongoDB কানেকশন
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+
+// ইউজার স্কিমা এবং মডেল
+const userSchema = new mongoose.Schema({
+  googleId: String,
+  displayName: String,
+  email: String,
+});
+
+const User = mongoose.model("userbd", userSchema);
+
+// Passport কনফিগারেশন
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: "/auth/google/callback",
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ googleId: profile.id });
+
+        if (!user) {
+          user = await new User({
+            googleId: profile.id,
+            displayName: profile.displayName,
+            email: profile.emails[0].value,
+          }).save();
+        }
+
+        done(null, user);
+      } catch (err) {
+        done(err, null);
+      }
+    }
+  )
+);
+
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+  const user = await User.findById(id);
+  done(null, user);
+});
+
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// CORS কনফিগারেশন
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
+  })
+);
+
+// Express সেশন কনফিগারেশন
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 24 * 60 * 60 * 1000, // 1 দিন (24 ঘণ্টা)
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+    },
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGO_URI,
+    }),
+  })
+);
+
+// Passport এবং সেশন ইনিশিয়ালাইজ করুন
+app.use(passport.initialize());
+app.use(passport.session());
+
+// রাউটস
+app.get(
+  "/auth/google",
+  passport.authenticate("google", { scope: ["profile", "email"] })
+);
+
+app.get(
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/" }),
+  (req, res) => {
+    res.redirect(process.env.FRONTEND_URL || "http://localhost:3000");
+  }
+);
+
+app.post("/api/auth/google/one-tap", async (req, res) => {
+  const { idToken } = req.body;
+
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    const userId = payload["sub"];
+
+    let user = await User.findOne({ googleId: userId });
+
+    if (!user) {
+      user = await new User({
+        googleId: userId,
+        displayName: payload["name"],
+        email: payload["email"],
+      }).save();
+    }
+
+    req.session.user = user;
+    res.status(200).json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(401).send("Invalid ID Token");
+  }
+});
+
+app.get("/api/current_user", (req, res) => {
+  res.send(req.session.user);
+});
+
+app.get("/api/logout", (req, res) => {
+  req.session.destroy(() => res.redirect("/"));
+});
+
+// প্রোফাইল রাউট
+app.get("/api/profile", async (req, res) => {
+  if (!req.session.user) {
+    return res.status(401).send("Not authenticated");
+  }
+  try {
+    const user = await User.findById(req.session.user._id);
+    res.json(user);
+  } catch (err) {
+    res.status(500).send("Error fetching user profile");
+  }
+});
+
+app.listen(5000, () => {
+  console.log("Server started on http://localhost:5000");
+});
