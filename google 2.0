@@ -1,0 +1,61 @@
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const session = require("express-session");
+const MongoStore = require("connect-mongo");
+const cors = require("cors");
+const passport = require("./config/passport"); // passport কনফিগারেশন আমদানি করুন
+const authRoutes = require("./routes/auth"); // নতুন রাউটস আমদানি করুন
+
+const app = express();
+
+// MongoDB কানেকশন
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("MongoDB Connected"))
+  .catch((err) => console.log(err));
+
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// CORS কনফিগারেশন
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
+  })
+);
+
+// Express সেশন কনফিগারেশন
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGO_URI,
+    }),
+    cookie: {
+      maxAge: 24 * 60 * 60 * 1000, // 1 দিন
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+    },
+  })
+);
+
+// Passport Middleware
+app.use(passport.initialize());
+app.use(passport.session());
+
+// রাউট
+app.use("/auth", authRoutes); // auth রাউটস যোগ করুন
+
+// সার্ভার চালু করুন
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
